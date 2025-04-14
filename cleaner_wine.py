@@ -39,7 +39,7 @@ def parse_response(response, field_keys):
 
     for line in lines:
         for field in field_keys:
-            pattern = rf"{field}\s*[:\-–]\s*(.+)"
+            pattern = rf"{re.escape(field)}\s*(?:\:\s|\-\s)(.+)"
             match = re.match(pattern, line.strip(), re.IGNORECASE)
             if match:
                 result[field] = match.group(1).strip()
