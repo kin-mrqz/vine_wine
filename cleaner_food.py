@@ -1,69 +1,82 @@
+import re
 import csv
 import time
 from tqdm import tqdm
 import ollama
 
 client = ollama.Client()
-INPUT_PATH = 'cleaned_wine_output.csv'
-OUTPUT_PATH = 'cleaned_food_output.csv'
+INPUT_FILE = 'main_wine_output.csv'
+OUTPUT_FILE = 'cleaner_food_output.csv'
 MAX_RETRIES = 10
 
-# Index mapping
-food_columns = {
-    1: {'name_col': 17, 'fields': list(range(18, 25 + 1))},
-    2: {'name_col': 26, 'fields': list(range(27, 34 + 1))},
-    3: {'name_col': 35, 'fields': list(range(36, 43 + 1))}
+# 0-based indexing: Food name column → related column indices for subfields
+FOOD_BLOCKS = {
+    16: list(range(17, 25)),  # Food 1 block
+    25: list(range(26, 34)),  # Food 2 block
+    34: list(range(35, 43))   # Food 3 block
 }
 
-# Field prompts (modular per food)
-field_prompts = {
-    0: "grape and food type",
-    1: "tasting notes",
-    2: "food and wine acidity",
-    3: "regional pairing",
-    4: "sweetness and spiciness",
-    5: "food type",
-    6: "food course"
-}
+FIELD_NAMES = [
+    "Grape and Food Type", "Tasting Notes", "Food & Wine Acidity",
+    "Regional Pairing", "Sweetness & Spiciness", "Food Type", "Course"
+]
 
-def generate_with_retries(prompt):
-    for attempt in range(MAX_RETRIES):
-        try:
-            res = client.generate(model='llama2:7b', prompt=prompt).get("response", "").strip()
-            if res:
-                return res
-        except Exception as e:
-            print(f"Retry {attempt+1} failed: {e}")
-            time.sleep(1)
-    return ""
+def get_prompt(food_name, field):
+    return f"Given the dish \"{food_name}\", generate its {field}."
 
-with open(INPUT_PATH, 'r', encoding='utf-8-sig') as infile:
-    reader = list(csv.reader(infile))
+def extract_field(response, target_label):
+    """Use regex to extract response line that starts with target label and grab text after ':' or '-'"""
+    pattern = rf"{target_label}\s*[:\-–]\s*(.+)"
+    match = re.search(pattern, response, re.IGNORECASE)
+    return match.group(1).strip() if match else ""
+
+def generate_all_fields(food_name):
+    fields = []
+    for field in FIELD_NAMES:
+        prompt = get_prompt(food_name, field)
+        for _ in range(MAX_RETRIES):
+            try:
+                res = client.generate(model='llama2:7b', prompt=prompt)
+                text = res.get('response', '').strip()
+                if text:
+                    value = extract_field(text, field)
+                    fields.append(value or text)
+                    break
+            except:
+                time.sleep(1)
+        else:
+            fields.append("")
+    return fields
+
+# === Load CSV ===
+with open(INPUT_FILE, 'r', encoding='utf-8-sig') as f:
+    reader = list(csv.reader(f))
     header, rows = reader[0], reader[1:]
 
-updated_rows = [header]
+# === Process Rows ===
+for row in tqdm(rows, desc="Cleaning food fields"):
+    for food_col, field_indices in FOOD_BLOCKS.items():
+        food_name = row[food_col].strip() if food_col < len(row) else ""
+        if not food_name:
+            continue
 
-for row in tqdm(rows, desc="Cleaning food details"):
-    for food_num, config in food_columns.items():
-        name_idx = config['name_col']
-        field_indices = config['fields']
-        if name_idx >= len(row): continue
-        food_name = row[name_idx].strip()
-        if not food_name: continue
+        # If any of the target cols are empty, regenerate the full block
+        needs_generation = any(
+            col >= len(row) or not row[col].strip() for col in field_indices
+        )
 
-        for i, field_idx in enumerate(field_indices):
-            if field_idx >= len(row) or not row[field_idx].strip():
-                field_label = field_prompts.get(i % 7)
-                if field_label:
-                    prompt = f"Given this dish: {food_name}, generate {field_label}."
-                    result = generate_with_retries(prompt)
-                    if field_idx >= len(row):
-                        row.extend([""] * (field_idx + 1 - len(row)))
-                    row[field_idx] = result
-    updated_rows.append(row)
+        if needs_generation:
+            generated = generate_all_fields(food_name)
+            for j, gen_val in enumerate(generated):
+                dest_idx = field_indices[j]
+                if len(row) <= dest_idx:
+                    row.extend([""] * (dest_idx + 1 - len(row)))
+                row[dest_idx] = gen_val
 
-with open(OUTPUT_PATH, 'w', newline='', encoding='utf-8-sig') as outfile:
-    writer = csv.writer(outfile)
-    writer.writerows(updated_rows)
+# === Save Output ===
+with open(OUTPUT_FILE, 'w', newline='', encoding='utf-8-sig') as f:
+    writer = csv.writer(f)
+    writer.writerow(header)
+    writer.writerows(rows)
 
-print("✅ Food detail cleaning complete! Saved to:", OUTPUT_PATH)
+print("✅ Cleaner food details saved to:", OUTPUT_FILE)
