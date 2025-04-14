@@ -25,16 +25,40 @@ output_file = r"C:\Users\User\Desktop\Uni\Career\WS\MAIN\vine_wine\vinewine\deli
 row_limit = 10  # Set to None for full run
 
 # === Parse model response into a metadata dictionary ===
+import re
+
 def parse_metadata(response):
+    # Canonical metadata field keys
+    meta_fields = ['soil_type', 'vintage', 'tasting_notes']
     metadata = {field: "" for field in meta_fields}
+
+    # Mapping loose keys to canonical field names
+    label_map = {
+        'soil': 'soil_type',
+        'soil type': 'soil_type',
+        'soil_type': 'soil_type',
+        'vintage': 'vintage',
+        'tasting': 'tasting_notes',
+        'tasting notes': 'tasting_notes',
+        'tasting_notes': 'tasting_notes'
+    }
+
     for line in response.splitlines():
-        if ':' in line:
-            key, val = line.split(':', 1)
-            key_clean = key.strip().lower()
-            val = val.strip()
-            if key_clean in metadata:
-                metadata[key_clean] = val
+        line = line.strip().lstrip("*•- ")  # Clean bullet points, etc.
+        
+        # Match anything like "Label: value" or "Label - value"
+        match = re.match(r"(?i)([a-z_ ]+)\s*[:\-]\s*(.+)", line)
+        if match:
+            raw_key, val = match.groups()
+            raw_key = raw_key.strip().lower()
+            val = val.strip().rstrip(',')
+
+            # Map raw_key to canonical field name
+            if raw_key in label_map:
+                metadata[label_map[raw_key]] = val
+
     return metadata
+
 
 # === Retry Wrapper ===
 def get_model_response(wine_name, max_retries=10, delay=1):
